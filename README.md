@@ -12,7 +12,7 @@ The whole API is ported: the parser, attributes, HTML5 entities, visible text an
 not a wrapper: there are also ports to [Go](https://github.com/romanti3172/fasthtmlparser),
 [Rust](https://github.com/romanti3172/fasthtmlparser-rs), Java, TypeScript, Python, PHP and Ruby.
 
-C++20, no dependencies; tested with MSVC 19.52 and gcc 16 (std::pmr, floating-point `std::to_chars`, `<bit>`). CMake:
+C++20, no dependencies; tested with MSVC, gcc and clang (CI on Windows and Linux; std::pmr, floating-point `std::to_chars`, `<bit>`). CMake:
 
 ```cmake
 include(FetchContent)
@@ -115,7 +115,7 @@ tags left out or dropped at random, names upper-cased, pages cut off, saved with
 - `no crash on mangled pages`: pages cut, spliced and sprinkled with markup, multi-byte text and invalid UTF-8; every
   method on every tag and a set of queries must run (`FASTHTML_FUZZ_ROUNDS=200` for a longer run).
 
-All pass on MSVC 19.52 and gcc 16, with the one documented exception of the other ports: on the page nested 600
+All pass with MSVC, gcc and clang, with the one documented exception of the other ports: on the page nested 600
 levels deep the .NET result depends on the order of an unstable sort.
 
 Intended differences, as in the other ports: `text_line_breaks` joins lines with `"\n"` on every OS, and a missing
