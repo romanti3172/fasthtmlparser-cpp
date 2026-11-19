@@ -123,7 +123,41 @@ sequences are kept as bytes and read as U+FFFD where text is decoded.
 
 ## Benchmarks
 
-BENCHMARKS
+Windows, MSVC 19.52, AMD Ryzen 7 3800X; full table in [`bench-results.md`](bench-results.md). The benchmark is its own
+CMake project (`bench/`) that fetches [lexbor](https://github.com/lexbor/lexbor) 3.0.1 (the HTML5 parser behind
+selectolax and PHP's `Dom\HTMLDocument`, with CSS selectors), [Gumbo](https://codeberg.org/gumbo-parser/gumbo-parser)
+0.14.1 (no selectors: a walk over its tree) and [libxml2](https://gitlab.gnome.org/GNOME/libxml2) 2.15.4 (the parser
+behind lxml and Nokogiri, with XPath). Every library must extract the same records before anything is timed
+(`--check`). myhtml, lexbor's deprecated predecessor, is left out: its CMakeLists no longer configures with CMake 4.
+
+Parse a page:
+
+| Page | fasthtmlparser | lexbor | libxml2 | Gumbo |
+|---|---:|---:|---:|---:|
+| quotes, 11 KB | 16 μs | 114 μs | 310 μs | 695 μs |
+| laptops, 38 KB | 49 μs | 363 μs | 992 μs | 2,113 μs |
+| books, 51 KB | 57 μs | 336 μs | 958 μs | 2,833 μs |
+| books x10, 510 KB | 566 μs | 4,633 μs | 9,098 μs | 28,642 μs |
+| books without `</li>` `</p>` | 54 μs | 301 μs | 920 μs | 2,731 μs |
+
+Scrape a page: parse and extract the records. Books: 20 × title, price, rating; quotes: 10 × text, author, tags.
+
+| Task | fasthtmlparser | Other |
+|---|---:|---:|
+| books, `find` | 80 μs | Gumbo tree walk 2,849 μs |
+| books, CSS | 80 μs | lexbor 377 μs |
+| books, XPath | 127 μs | libxml2 1,241 μs |
+| quotes, `find` | 37 μs | Gumbo tree walk 674 μs |
+| quotes, CSS | 39 μs | lexbor 129 μs |
+
+On these pages the port parses 6-8x faster than lexbor, 16-19x faster than libxml2 and 40-50x faster than Gumbo, and
+scrapes 3-5x faster than lexbor with CSS and 10x faster than libxml2 with XPath. That is not a like-for-like
+comparison of parsers: lexbor, Gumbo and libxml2 build a full DOM with the HTML5 (or, for libxml2, HTML4) tree
+construction rules, while this parser keeps positions and reads values lazily. Taking the memory of a document from
+a reused `std::pmr` arena or parsing without the copy of the page changes little (56 μs for books).
+
+The Linux image `fhp-bench-cpp` (`docker build -f bench/Dockerfile -t fhp-bench-cpp .`) builds and tests the port
+with the official `gcc:15` image and runs the same benchmark.
 
 ## Building
 

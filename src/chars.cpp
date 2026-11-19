@@ -87,25 +87,36 @@ std::size_t count_byte(std::string_view s, char c) noexcept {
     return count;
 }
 
+namespace {
+
+/// The first position in [i, last] holding a or b, or npos.
+std::size_t find_either(const char* p, std::size_t i, std::size_t last, char a, char b) noexcept {
+#ifdef FHP_SSE2
+    const __m128i va = _mm_set1_epi8(a), vb = _mm_set1_epi8(b);
+    while (i + 16 <= last + 1) {
+        __m128i v = _mm_loadu_si128(reinterpret_cast<const __m128i*>(p + i));
+        unsigned mask = static_cast<unsigned>(_mm_movemask_epi8(_mm_or_si128(_mm_cmpeq_epi8(v, va), _mm_cmpeq_epi8(v, vb))));
+        if (mask) return i + static_cast<std::size_t>(std::countr_zero(mask));
+        i += 16;
+    }
+#endif
+    for (; i <= last; ++i)
+        if (p[i] == a || p[i] == b) return i;
+    return npos;
+}
+
+} // namespace
+
 std::size_t index_fold(std::string_view s, std::string_view sub, std::size_t from) noexcept {
     if (sub.empty()) return from <= s.size() ? from : npos;
     if (from > s.size() || sub.size() > s.size() - from) return npos;
-    unsigned char c = static_cast<unsigned char>(sub[0]);
-    char lower = to_lower_ascii(static_cast<char>(c));
-    char upper = to_upper_ascii(static_cast<char>(c));
+    char lower = to_lower_ascii(sub[0]);
+    char upper = to_upper_ascii(sub[0]);
     std::size_t last = s.size() - sub.size(); // the last position a match can start at
-    std::size_t i = from;
-    while (i <= last) {
-        if (lower == upper) {
-            i = find_byte(s.substr(0, last + 1), lower, i);
-            if (i == npos) return npos;
-        } else {
-            const char* p = s.data();
-            while (i <= last && p[i] != lower && p[i] != upper) ++i;
-            if (i > last) return npos;
-        }
-        if (eq_ignore_ascii_case(s.substr(i, sub.size()), sub)) return i;
-        ++i;
+    for (std::size_t i = from; i <= last; ++i) {
+        i = find_either(s.data(), i, last, lower, upper);
+        if (i == npos) return npos;
+        if (eq_ignore_ascii_case(s.substr(i + 1, sub.size() - 1), sub.substr(1))) return i;
     }
     return npos;
 }
