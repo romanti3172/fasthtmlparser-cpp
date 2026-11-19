@@ -1,5 +1,7 @@
 # fasthtmlparser (C++)
 
+[![CI](https://github.com/romanti3172/fasthtmlparser-cpp/actions/workflows/ci.yml/badge.svg)](https://github.com/romanti3172/fasthtmlparser-cpp/actions/workflows/ci.yml)
+
 C++20 port of [z3l.FastHtmlParser](https://github.com/romanti3172/z3l.FastHtmlParser): a fast HTML / XML parser for
 scraping, with **XPath 1.0** and **CSS selectors**. It is built for extracting data, not for building a DOM: a page
 becomes a flat list of tags that hold only positions in the source. Text, attributes and entities are read when you
