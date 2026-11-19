@@ -24,19 +24,16 @@ inline std::string read_file(const std::string& path) {
     return ss.str();
 }
 
+struct Member;
+
 struct Json {
     enum class Type { null, boolean, number, string, array, object } type = Type::null;
     bool b = false;
     std::string text; // string value, or the number as written
     std::vector<Json> items;
-    std::vector<std::pair<std::string, Json>> members; // in source order
+    std::vector<Member> members; // in source order (a vector may hold an incomplete type; a pair may not)
 
-    const Json& operator[](std::string_view key) const {
-        for (const auto& m : members)
-            if (m.first == key) return m.second;
-        static const Json none;
-        return none;
-    }
+    const Json& operator[](std::string_view key) const; // defined after Member
     const Json& operator[](std::size_t i) const { return items.at(i); }
     long long number() const { return std::stoll(text); }
     bool is_string() const { return type == Type::string; }
@@ -53,15 +50,12 @@ struct Json {
             for (std::size_t i = 0; i < items.size(); ++i) out += (i ? "," : "") + items[i].dump();
             return out + "]";
         }
-        case Type::object: {
-            std::string out = "{";
-            for (std::size_t i = 0; i < members.size(); ++i)
-                out += (i ? "," : "") + quote(members[i].first) + ":" + members[i].second.dump();
-            return out + "}";
-        }
+        case Type::object: return dump_object();
         }
         return {};
     }
+
+    std::string dump_object() const; // defined after Member
 
     static std::string quote(std::string_view s) {
         std::string out = "\"";
@@ -106,6 +100,25 @@ struct Json {
     }
 };
 
+struct Member {
+    std::string first;
+    Json second;
+};
+
+inline const Json& Json::operator[](std::string_view key) const {
+    for (const auto& m : members)
+        if (m.first == key) return m.second;
+    static const Json none;
+    return none;
+}
+
+inline std::string Json::dump_object() const {
+    std::string out = "{";
+    for (std::size_t i = 0; i < members.size(); ++i)
+        out += (i ? "," : "") + quote(members[i].first) + ":" + members[i].second.dump();
+    return out + "}";
+}
+
 class JsonParser {
 public:
     explicit JsonParser(std::string_view s) : s_(s) {}
@@ -147,7 +160,7 @@ private:
                 std::string key = string();
                 space();
                 if (s_[p_++] != ':') fail("':' expected");
-                j.members.emplace_back(std::move(key), value());
+                j.members.push_back(Member{std::move(key), value()});
                 space();
                 if (s_[p_] == ',') {
                     ++p_;
