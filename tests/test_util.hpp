@@ -24,14 +24,27 @@ inline std::string read_file(const std::string& path) {
     return ss.str();
 }
 
-struct Member;
+struct Json;
+
+/// A member of a JSON object, as a view.
+struct Member {
+    const std::string& first;
+    const Json& second;
+};
 
 struct Json {
     enum class Type { null, boolean, number, string, array, object } type = Type::null;
     bool b = false;
     std::string text; // string value, or the number as written
     std::vector<Json> items;
-    std::vector<Member> members; // in source order (a vector may hold an incomplete type; a pair may not)
+    std::vector<std::string> keys; // the members of an object, in source order (two vectors: a vector may hold
+    std::vector<Json> values;      // the incomplete Json, a pair may not)
+
+    std::vector<Member> members() const {
+        std::vector<Member> out;
+        for (std::size_t i = 0; i < keys.size(); ++i) out.push_back(Member{keys[i], values[i]});
+        return out;
+    }
 
     const Json& operator[](std::string_view key) const; // defined after Member
     const Json& operator[](std::size_t i) const { return items.at(i); }
@@ -100,22 +113,16 @@ struct Json {
     }
 };
 
-struct Member {
-    std::string first;
-    Json second;
-};
-
 inline const Json& Json::operator[](std::string_view key) const {
-    for (const auto& m : members)
-        if (m.first == key) return m.second;
+    for (std::size_t i = 0; i < keys.size(); ++i)
+        if (keys[i] == key) return values[i];
     static const Json none;
     return none;
 }
 
 inline std::string Json::dump_object() const {
     std::string out = "{";
-    for (std::size_t i = 0; i < members.size(); ++i)
-        out += (i ? "," : "") + quote(members[i].first) + ":" + members[i].second.dump();
+    for (std::size_t i = 0; i < keys.size(); ++i) out += (i ? "," : "") + quote(keys[i]) + ":" + values[i].dump();
     return out + "}";
 }
 
@@ -160,7 +167,8 @@ private:
                 std::string key = string();
                 space();
                 if (s_[p_++] != ':') fail("':' expected");
-                j.members.push_back(Member{std::move(key), value()});
+                j.keys.push_back(std::move(key));
+                j.values.push_back(value());
                 space();
                 if (s_[p_] == ',') {
                     ++p_;

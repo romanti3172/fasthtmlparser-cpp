@@ -106,7 +106,7 @@ TEST_CASE("tags as .NET") {
                                        "\n  c++:  " + short_text(value.dump()) + "\n  .net: " + short_text(e[key].dump()));
             };
             check("text", Json::str(n.text().str()));
-            for (const auto& [attr, value] : e["attrs"].members) {
+            for (const auto& [attr, value] : e["attrs"].members()) {
                 std::string v = n.attr(attr).str();
                 if (v != value.text)
                     problems.push_back("[" + std::to_string(i) + "] <" + std::string(n.name()) + "> @" + attr + ": " +
@@ -142,18 +142,18 @@ TEST_CASE("tags as .NET") {
 TEST_CASE("compile as .NET") {
     Json expected = test::parse_json(test::read_file((testdata() / "expected" / "queries" / "compile.json").string()));
     std::vector<std::string> problems;
-    for (const auto& [x, want] : expected["xpath"].members) {
+    for (const auto& [x, want] : expected["xpath"].members()) {
         auto got = XPathQuery::compile(x);
         std::string g = got ? "ok" : "error";
         if (g != want.text) problems.push_back("XPath " + Json::str(x).dump() + ": " + g + ", .NET: " + want.text + " (" + got.error() + ")");
     }
-    for (const auto& [c, want] : expected["css"].members) {
+    for (const auto& [c, want] : expected["css"].members()) {
         auto got = CssQuery::compile(c);
         std::string g = got ? "ok" : "error";
         if (g != want.text) problems.push_back("CSS " + Json::str(c).dump() + ": " + g + ", .NET: " + want.text + " (" + got.error() + ")");
     }
     for (const auto& p : problems) MESSAGE(p);
-    MESSAGE((expected["xpath"].members.size() + expected["css"].members.size()) << " queries compiled");
+    MESSAGE((expected["xpath"].keys.size() + expected["css"].keys.size()) << " queries compiled");
     CHECK(problems.empty());
 }
 
@@ -179,7 +179,7 @@ TEST_CASE("queries as .NET") {
                 problems.push_back(what + "\n  c++:  " + short_text(got.dump()) + "\n  .net: " + short_text(want.dump()));
         };
 
-        for (const auto& [x, want] : expected["xpath"].members) {
+        for (const auto& [x, want] : expected["xpath"].members()) {
             if (std::find(known_differences.begin(), known_differences.end(), name + " " + x) != known_differences.end())
                 continue;
             auto compiled = XPathQuery::compile(x);
@@ -202,7 +202,7 @@ TEST_CASE("queries as .NET") {
             check("XPath scoped " + x, want["scoped"], Json::arr(std::move(scoped)));
         }
 
-        for (const auto& [c, want] : expected["css"].members) {
+        for (const auto& [c, want] : expected["css"].members()) {
             auto compiled = CssQuery::compile(c);
             REQUIRE_MESSAGE(compiled.ok(), compiled.error());
             const CssQuery& q = *compiled;
