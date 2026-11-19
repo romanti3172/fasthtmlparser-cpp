@@ -8,12 +8,15 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
+#include <cstring>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
 #include "chars.hpp"
 #include "document_data.hpp"
+
 
 namespace fasthtmlparser {
 
@@ -26,6 +29,14 @@ constexpr std::size_t max_depth = 512;
 constexpr std::size_t repair_budget_factor = 8;
 
 using TagSet = std::array<bool, tag_count>;
+
+/// The slot of a lower-case name in Tables::lookup.
+std::size_t name_hash(std::string_view lower) noexcept {
+    std::uint32_t h = 0;
+    for (unsigned char c : lower) h = h * 31 + c;
+    return ((h + static_cast<std::uint32_t>(lower.size())) * 2654435769u) >> 22; // 10 bits: lookup_size
+}
+
 
 struct Rule {
     TagSet targets{};
@@ -63,7 +74,9 @@ struct Tables {
     TagSet closes_p{};
     TagSet void_tags{};
     std::array<std::string, tag_count> raw_text_ends{};
-    std::unordered_map<std::string_view, int> lookup;
+    // tag name → Tag: open addressing over the lower-case names
+    static constexpr std::size_t lookup_size = 1024;
+    std::array<std::int16_t, lookup_size> lookup{};
 
     Tables() {
         implied_end_rules.fill(-1);
@@ -113,8 +126,12 @@ struct Tables {
                       Tag::NOFRAMES})
             raw_text_ends[t.index()] = "</" + std::string(t.name());
 
-        lookup.reserve(tag_count * 2);
-        for (std::size_t i = 0; i < tag_count; ++i) lookup.emplace(tag_names[i], static_cast<int>(i));
+        lookup.fill(-1);
+        for (std::size_t i = 0; i < tag_count; ++i) {
+            std::size_t slot = name_hash(tag_names[i]);
+            while (lookup[slot] >= 0) slot = (slot + 1) & (lookup_size - 1);
+            lookup[slot] = static_cast<std::int16_t>(i);
+        }
     }
 };
 
@@ -160,11 +177,6 @@ bool is_xml(std::string_view src) {
     return starts_with_ignore_ascii_case(src.substr(i), "<?xml");
 }
 
-std::string_view trim_ascii(std::string_view s) {
-    while (!s.empty() && is_space(static_cast<unsigned char>(s.front()))) s.remove_prefix(1);
-    return trim_ascii_end(s);
-}
-
 std::string_view extract_tag_name(std::string_view tag_source) {
     std::string_view t = trim(tag_source);
     if (t.substr(0, 3) == "!--") return t.substr(0, 3);
@@ -177,7 +189,18 @@ std::string_view extract_tag_name(std::string_view tag_source) {
 /// The first of '<', '=', '>' in s[from, to), or npos.
 std::size_t find_tag_char(std::string_view s, std::size_t from, std::size_t to) {
     const char* p = s.data();
-    for (std::size_t i = from; i < to; ++i) {
+    std::size_t i = from;
+#ifdef FHP_SSE2
+    const __m128i lt = _mm_set1_epi8('<'), eq = _mm_set1_epi8('='), gt = _mm_set1_epi8('>');
+    while (i + 16 <= to) {
+        __m128i v = _mm_loadu_si128(reinterpret_cast<const __m128i*>(p + i));
+        __m128i m = _mm_or_si128(_mm_or_si128(_mm_cmpeq_epi8(v, lt), _mm_cmpeq_epi8(v, eq)), _mm_cmpeq_epi8(v, gt));
+        unsigned mask = static_cast<unsigned>(_mm_movemask_epi8(m));
+        if (mask) return i + static_cast<std::size_t>(std::countr_zero(mask));
+        i += 16;
+    }
+#endif
+    for (; i < to; ++i) {
         char c = p[i];
         if (c == '<' || c == '=' || c == '>') return i;
     }
@@ -597,20 +620,22 @@ std::size_t find_comment_end(std::string_view s, std::size_t content_start) noex
 }
 
 int lookup_tag(std::string_view name) noexcept {
-    if (name.empty() || name.size() > 32) return -1;
-    const auto& lookup = tables().lookup;
-    if (is_lower_ascii(name)) {
-        auto it = lookup.find(name);
-        return it == lookup.end() ? -1 : it->second;
-    }
+    std::size_t n = name.size();
+    if (n == 0 || n > 32) return -1;
     char buf[32];
-    for (std::size_t i = 0; i < name.size(); ++i) {
+    for (std::size_t i = 0; i < n; ++i) {
         unsigned char c = static_cast<unsigned char>(name[i]);
         if (c >= 0x80) return -1; // known names are ASCII
         buf[i] = to_lower_ascii(static_cast<char>(c));
     }
-    auto it = lookup.find(std::string_view(buf, name.size()));
-    return it == lookup.end() ? -1 : it->second;
+    std::string_view lower(buf, n);
+    const Tables& t = tables();
+    for (std::size_t slot = name_hash(lower);; slot = (slot + 1) & (Tables::lookup_size - 1)) {
+        int k = t.lookup[slot];
+        if (k < 0) return -1;
+        std::string_view known = tag_names[k];
+        if (known.size() == n && std::memcmp(known.data(), buf, n) == 0) return k;
+    }
 }
 
 std::string_view raw_text_end(int key) noexcept {
@@ -633,7 +658,7 @@ void parse(std::string_view src, std::pmr::vector<NodeData>& out, std::pmr::vect
     sc.open_in_list.assign(tag_count, 0);
 
     ParseState st{src, is_xml(src), sc.nodes.data(), sc.states.data(), sc.stack, sc.open_by_key, sc.open_in_list,
-                  custom_names, {}, {}};
+                  custom_names, {}, {}, 0, 0, -1, 0, 0, {}, tables()};
     st.budget = repair_budget_factor * src.size();
 
     auto [tag_started, tag_start] = st.scan(false, 0, src.size());

@@ -5,6 +5,7 @@
 #include <cmath>
 #include <limits>
 #include <memory>
+#include <memory_resource>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -29,12 +30,14 @@ enum class XKind : unsigned char { root, element, comment, text, attribute };
 /// A node of the XPath data model: the document root, a tag (element or comment), a text node (a run of source text
 /// between tags) or an attribute (positions in the opening tag).
 struct XNode {
+    static constexpr std::uint32_t no_value = 0xFFFFFFFFu;
+
     XKind kind = XKind::root;
-    std::int32_t tag = -1;        // element / comment: the tag; text / attribute: the parent element (-1: the root)
-    std::size_t start = 0;        // text: first byte; attribute: name start
-    std::size_t length = 0;       // text: length; attribute: name length
-    std::size_t value_start = npos; // attribute: value start (npos for no value)
-    std::size_t value_length = 0;
+    std::int32_t tag = -1;           // element / comment: the tag; text / attribute: the parent element (-1: the root)
+    std::uint32_t start = 0;         // text: first byte; attribute: name start (positions fit in 32 bits: NodeData)
+    std::uint32_t length = 0;        // text: length; attribute: name length
+    std::uint32_t value_start = no_value; // attribute: value start (no_value without a value)
+    std::uint32_t value_length = 0;
 
     static XNode root() { return XNode{}; }
 
@@ -74,7 +77,7 @@ struct XNode {
         case XKind::root: return std::numeric_limits<std::int32_t>::max();
         case XKind::element:
         case XKind::comment: return doc.nodes[tag].end;
-        case XKind::text: return static_cast<std::int64_t>(start + length) - 1;
+        case XKind::text: return static_cast<std::int64_t>(start) + length - 1;
         case XKind::attribute: return doc.nodes[tag].start; // the children of its element follow it
         }
         return 0;
@@ -83,7 +86,8 @@ struct XNode {
     std::string_view attr_name(const DocumentData& doc) const { return doc.source.substr(start, length); }
 };
 
-using NodeSet = std::vector<XNode>;
+/// The node-sets of one evaluation take their memory from an arena that lives as long as the evaluation.
+using NodeSet = std::pmr::vector<XNode>;
 
 // ----- node tests -----
 
@@ -188,8 +192,8 @@ void add_text(std::int32_t parent, std::size_t start, std::size_t end, NodeSet& 
         XNode x;
         x.kind = XKind::text;
         x.tag = parent;
-        x.start = start;
-        x.length = end - start;
+        x.start = static_cast<std::uint32_t>(start);
+        x.length = static_cast<std::uint32_t>(end - start);
         out.push_back(x);
     }
 }
@@ -217,7 +221,7 @@ void add_children(const DocumentData& doc, const XNode& x, const NodeTest& test,
 }
 
 void add_descendants_with_text(const DocumentData& doc, const XNode& x, const NodeTest& test, NodeSet& out) {
-    NodeSet children;
+    NodeSet children(out.get_allocator());
     add_children(doc, x, NodeTest::any_node(), children);
     for (const XNode& child : children) {
         if (test.matches(doc, child, false)) out.push_back(child);
@@ -265,10 +269,10 @@ void add_attributes(const DocumentData& doc, const XNode& x, const NodeTest& tes
             XNode n;
             n.kind = XKind::attribute;
             n.tag = x.tag;
-            n.start = a.name_start;
-            n.length = a.name_len;
-            n.value_start = a.value_start;
-            n.value_length = a.value_len;
+            n.start = static_cast<std::uint32_t>(a.name_start);
+            n.length = static_cast<std::uint32_t>(a.name_len);
+            n.value_start = a.value_start == npos ? XNode::no_value : static_cast<std::uint32_t>(a.value_start);
+            n.value_length = static_cast<std::uint32_t>(a.value_len);
             out.push_back(n);
         }
     }
@@ -295,7 +299,7 @@ CowString string_value(const DocumentData& doc, const XNode& x) {
     case XKind::root: return clear_tags(doc.source);
     case XKind::element: return doc.at(static_cast<std::size_t>(x.tag)).text();
     case XKind::attribute:
-        if (x.value_start == npos) return CowString();
+        if (x.value_start == XNode::no_value) return CowString();
         return decode(doc.source.substr(x.value_start, x.value_length), true);
     case XKind::text: {
         std::string_view text = doc.source.substr(x.start, x.length);
@@ -662,11 +666,12 @@ namespace {
 
 struct EvalState {
     const DocumentData& doc;
+    std::pmr::memory_resource* mr;
     std::optional<NodeSet> all; // every element, comment and text node in document order
 
     const NodeSet& all_nodes() {
         if (!all) {
-            all.emplace();
+            all.emplace(mr);
             add_descendants(doc, XNode::root(), NodeTest::any_node(), *all);
         }
         return *all;
@@ -690,7 +695,17 @@ NodeSet eval_nodes(const Expr& e, const Ctx& c) {
     return std::move(std::get<0>(v));
 }
 
-std::string eval_string(const Expr& e, const Ctx& c) { return into_string(c.state->doc, eval(e, c)); }
+const std::string* attribute_name(const Expr& e);
+
+std::string eval_string(const Expr& e, const Ctx& c) {
+    // @name in a string context: the value read in place, without a node-set
+    if (const std::string* name = attribute_name(e)) {
+        std::string_view raw;
+        if (!attribute_of(c.state->doc, c.node, *name, raw)) return {};
+        return decode(raw, true).str();
+    }
+    return into_string(c.state->doc, eval(e, c));
+}
 
 double eval_number(const Expr& e, const Ctx& c) {
     if (e.kind == ExprKind::number) return e.number;
@@ -765,7 +780,7 @@ bool eval_predicate(const Expr& e, const Ctx& c) {
 NodeSet filter(NodeSet nodes, const std::vector<ExprPtr>& predicates, EvalState& state) {
     for (const ExprPtr& p : predicates) {
         std::size_t size = nodes.size();
-        NodeSet kept;
+        NodeSet kept(nodes.get_allocator());
         kept.reserve(size);
         for (std::size_t i = 0; i < size; ++i)
             if (eval_predicate(*p, Ctx{nodes[i], i + 1, size, &state})) kept.push_back(nodes[i]);
@@ -799,7 +814,7 @@ void collect_siblings(const DocumentData& doc, const XNode& x, const NodeTest& t
 
     std::optional<XNode> parent = parent_node(doc, x);
     if (!parent) return;
-    NodeSet siblings;
+    NodeSet siblings(out.get_allocator());
     add_children(doc, *parent, NodeTest::any_node(), siblings);
     std::int64_t key = x.key(doc);
     auto it = std::find_if(siblings.begin(), siblings.end(), [&](const XNode& s) { return s.key(doc) == key; });
@@ -893,7 +908,7 @@ void select_from(const Step& step, const XNode& x, NodeSet& out, EvalState& stat
     std::size_t start = out.size();
     collect(step, x, out, state);
     if (!step.predicates.empty() || step.is_reverse()) {
-        NodeSet tail(out.begin() + static_cast<std::ptrdiff_t>(start), out.end());
+        NodeSet tail(out.begin() + static_cast<std::ptrdiff_t>(start), out.end(), out.get_allocator());
         out.resize(start);
         NodeSet selected = filter(std::move(tail), step.predicates, state);
         if (step.is_reverse()) std::reverse(selected.begin(), selected.end());
@@ -906,7 +921,7 @@ void select_from(const Step& step, const XNode& x, NodeSet& out, EvalState& stat
 /// test.
 NodeSet select_descendants_of_nested(const Step& step, const NodeSet& input, EvalState& state) {
     const auto& nodes = state.doc.nodes;
-    NodeSet out;
+    NodeSet out(state.mr);
     std::size_t scanned_to = 0; // the tags before this index were scanned for an earlier input node
     bool scanned_any = false;
     for (const XNode& x : input) {
@@ -938,7 +953,7 @@ NodeSet select_descendants_of_nested(const Step& step, const NodeSet& input, Eva
 NodeSet select_shared_ancestors(const Step& step, const NodeSet& input, EvalState& state) {
     const DocumentData& doc = state.doc;
     std::unordered_set<std::int64_t> visited;
-    NodeSet out;
+    NodeSet out(state.mr);
     for (const XNode& x : input) {
         std::size_t start = out.size();
         XNode current = x;
@@ -954,7 +969,7 @@ NodeSet select_shared_ancestors(const Step& step, const NodeSet& input, EvalStat
             if (step.test.matches(doc, current, false)) out.push_back(current);
         }
         if (!step.predicates.empty() && out.size() > start) {
-            NodeSet tail(out.begin() + static_cast<std::ptrdiff_t>(start), out.end());
+            NodeSet tail(out.begin() + static_cast<std::ptrdiff_t>(start), out.end(), out.get_allocator());
             out.resize(start);
             NodeSet kept = filter(std::move(tail), step.predicates, state);
             out.insert(out.end(), kept.begin(), kept.end());
@@ -966,7 +981,7 @@ NodeSet select_shared_ancestors(const Step& step, const NodeSet& input, EvalStat
 NodeSet apply(const Step& step, NodeSet input, EvalState& state) {
     const DocumentData& doc = state.doc;
     if (input.size() == 1) {
-        NodeSet out;
+        NodeSet out(state.mr);
         select_from(step, input[0], out, state);
         return out;
     }
@@ -988,7 +1003,7 @@ NodeSet apply(const Step& step, NodeSet input, EvalState& state) {
         }
     }
 
-    NodeSet result;
+    NodeSet result(state.mr);
     for (const XNode& x : input) select_from(step, x, result, state);
     return sort_unique(doc, std::move(result));
 }
@@ -1167,7 +1182,7 @@ Value eval(const Expr& e, const Ctx& c) {
         return sort_unique(doc, std::move(result));
     }
     case ExprKind::path: {
-        NodeSet current;
+        NodeSet current(c.state->mr);
         if (e.left)
             current = eval_nodes(*e.left, c);
         else if (e.flag)
@@ -1825,8 +1840,14 @@ private:
 
 // ----- running -----
 
-Value run(const XPathExpr& x, const DocumentData& doc, const XNode& context) {
-    EvalState state{doc, std::nullopt};
+/// The arena of one evaluation: a buffer on the stack, then the heap.
+struct Arena {
+    alignas(std::max_align_t) std::byte buffer[8192];
+    std::pmr::monotonic_buffer_resource resource{buffer, sizeof buffer};
+};
+
+Value run(const XPathExpr& x, const DocumentData& doc, const XNode& context, Arena& arena) {
+    EvalState state{doc, &arena.resource, std::nullopt};
     return eval(*x.root, Ctx{context, 1, 1, &state});
 }
 
@@ -1836,7 +1857,8 @@ std::vector<Node> nodes_at(const XPathQuery& q, const XPathExpr& x, const Docume
     if (x.root->type() != XType::node_set)
         throw std::logic_error("fasthtmlparser: the XPath " + quoted(q.str()) + " gives a " +
                                type_name(x.root->type()) + ", not tags; use xpath_value");
-    Value v = run(x, doc, context);
+    Arena arena;
+    Value v = run(x, doc, context, arena);
     std::vector<Node> out;
     for (const XNode& n : std::get<0>(v))
         if (n.kind == XKind::element || n.kind == XKind::comment) out.push_back(doc.at(static_cast<std::size_t>(n.tag)));
@@ -1844,7 +1866,8 @@ std::vector<Node> nodes_at(const XPathQuery& q, const XPathExpr& x, const Docume
 }
 
 std::vector<std::string> values_at(const XPathExpr& x, const DocumentData& doc, const XNode& context) {
-    Value v = run(x, doc, context);
+    Arena arena;
+    Value v = run(x, doc, context, arena);
     std::vector<std::string> out;
     if (is_nodes(v)) {
         const NodeSet& set = std::get<0>(v);
@@ -1857,7 +1880,8 @@ std::vector<std::string> values_at(const XPathExpr& x, const DocumentData& doc, 
 }
 
 std::optional<std::string> value_at(const XPathExpr& x, const DocumentData& doc, const XNode& context) {
-    Value v = run(x, doc, context);
+    Arena arena;
+    Value v = run(x, doc, context, arena);
     if (is_nodes(v)) {
         const NodeSet& set = std::get<0>(v);
         if (set.empty()) return std::nullopt;
