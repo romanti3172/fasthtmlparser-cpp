@@ -156,6 +156,11 @@ comparison of parsers: lexbor, Gumbo and libxml2 build a full DOM with the HTML5
 construction rules, while this parser keeps positions and reads values lazily. Taking the memory of a document from
 a reused `std::pmr` arena or parsing without the copy of the page changes little (56 μs for books).
 
+[sanblch/fasthtmlparser-cpp](https://github.com/sanblch/fasthtmlparser-cpp), an independent C++20 port by a reader
+of the Habr article, is in the benchmark too (built from its sources at a pinned commit, same flags). Both extract the
+same records; this port is faster on every task, 15-25% on parsing and on `find` / CSS scraping, 1.7x on XPath
+(books: 51 against 60 μs to parse, 79 against 90 μs with `find`, 129 against 222 μs with XPath).
+
 The Linux image `fhp-bench-cpp` (`docker build -f bench/Dockerfile -t fhp-bench-cpp .`) builds and tests the port
 with the official `gcc:15` image and runs the same benchmark.
 

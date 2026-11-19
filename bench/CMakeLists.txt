@@ -83,3 +83,36 @@ if(BENCH_LIBXML2)
     target_link_libraries(fasthtmlparser_bench PRIVATE LibXml2::LibXml2)
     target_compile_definitions(fasthtmlparser_bench PRIVATE BENCH_LIBXML2 LIBXML_STATIC)
 endif()
+
+option(BENCH_SANBLCH "Also benchmark sanblch/fasthtmlparser-cpp, an independent C++ port" ON)
+if(BENCH_SANBLCH)
+    # sanblch/fasthtmlparser-cpp: another C++20 port of z3l.FastHtmlParser by a reader of the Habr article. Its
+    # CMakeLists is not used: its project has our name and builds its own tests and benchmark. The library is built
+    # here from its sources, with the flags of its CMakeLists (C++20, /utf-8), as the target sanblch_fh.
+    FetchContent_Declare(sanblch
+        GIT_REPOSITORY https://github.com/sanblch/fasthtmlparser-cpp.git
+        GIT_TAG 2fb1d7a2599570a6b4a7c4b3951036ea48e72065)
+    FetchContent_GetProperties(sanblch)
+    if(NOT sanblch_POPULATED)
+        FetchContent_Populate(sanblch)
+    endif()
+    add_library(sanblch_fh STATIC
+        ${sanblch_SOURCE_DIR}/src/tables.cpp
+        ${sanblch_SOURCE_DIR}/src/decode.cpp
+        ${sanblch_SOURCE_DIR}/src/text.cpp
+        ${sanblch_SOURCE_DIR}/src/parse.cpp
+        ${sanblch_SOURCE_DIR}/src/document.cpp
+        ${sanblch_SOURCE_DIR}/src/uri.cpp
+        ${sanblch_SOURCE_DIR}/src/css.cpp
+        ${sanblch_SOURCE_DIR}/src/xpath.cpp
+        ${sanblch_SOURCE_DIR}/src/generated_entities.cpp)
+    target_compile_features(sanblch_fh PUBLIC cxx_std_20)
+    target_include_directories(sanblch_fh PUBLIC ${sanblch_SOURCE_DIR}/include PRIVATE ${sanblch_SOURCE_DIR}/src)
+    if(MSVC)
+        target_compile_options(sanblch_fh PRIVATE /utf-8 /w)
+    else()
+        target_compile_options(sanblch_fh PRIVATE -w)
+    endif()
+    target_link_libraries(fasthtmlparser_bench PRIVATE sanblch_fh)
+    target_compile_definitions(fasthtmlparser_bench PRIVATE BENCH_SANBLCH)
+endif()

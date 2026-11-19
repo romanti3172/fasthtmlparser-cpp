@@ -18,6 +18,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <vector>
 
 #include <fasthtmlparser/fasthtmlparser.hpp>
@@ -28,6 +29,10 @@ extern "C" {
 #include <lexbor/html/html.h>
 #include <lexbor/selectors/selectors.h>
 }
+
+#ifdef BENCH_SANBLCH
+#include <fh/fasthtmlparser.hpp>
+#endif
 
 #ifdef BENCH_LIBXML2
 #include <libxml/HTMLparser.h>
@@ -87,8 +92,13 @@ void keep(const T& v) {
 namespace fhp = fasthtmlparser;
 using fhp::Tag;
 
-std::vector<Book> books_fast(std::string_view page) {
-    auto doc = fhp::Document::parse(page);
+/// The page copied into the document (as the Rust benchmark does), or read in place (view).
+fhp::Document load(std::string_view page, bool view) {
+    return view ? fhp::Document::parse_view(page) : fhp::Document::parse(page);
+}
+
+std::vector<Book> books_fast(std::string_view page, bool view = false) {
+    auto doc = load(page, view);
     std::vector<Book> out;
     for (fhp::Node pod : doc.find_all(fhp::by(Tag::ARTICLE).class_name("product_pod"))) {
         Book b;
@@ -124,8 +134,8 @@ struct FastQueries {
     static fhp::XPathQuery xpath(const char* s) { return std::move(fhp::XPathQuery::compile(s)).value(); }
 };
 
-std::vector<Book> books_fast_css(const FastQueries& q, std::string_view page) {
-    auto doc = fhp::Document::parse(page);
+std::vector<Book> books_fast_css(const FastQueries& q, std::string_view page, bool view = false) {
+    auto doc = load(page, view);
     std::vector<Book> out;
     for (fhp::Node pod : q.pods_css.all(doc)) {
         Book b;
@@ -137,8 +147,8 @@ std::vector<Book> books_fast_css(const FastQueries& q, std::string_view page) {
     return out;
 }
 
-std::vector<Book> books_fast_xpath(const FastQueries& q, std::string_view page) {
-    auto doc = fhp::Document::parse(page);
+std::vector<Book> books_fast_xpath(const FastQueries& q, std::string_view page, bool view = false) {
+    auto doc = load(page, view);
     std::vector<Book> out;
     for (fhp::Node pod : q.pods_xpath_q.nodes(doc)) {
         Book b;
@@ -159,8 +169,8 @@ std::string join_texts(const std::vector<fhp::Node>& nodes) {
     return out;
 }
 
-std::vector<Quote> quotes_fast(std::string_view page) {
-    auto doc = fhp::Document::parse(page);
+std::vector<Quote> quotes_fast(std::string_view page, bool view = false) {
+    auto doc = load(page, view);
     std::vector<Quote> out;
     for (fhp::Node q : doc.find_all(fhp::by(Tag::DIV).class_name("quote"))) {
         Quote r;
@@ -172,8 +182,8 @@ std::vector<Quote> quotes_fast(std::string_view page) {
     return out;
 }
 
-std::vector<Quote> quotes_fast_css(const FastQueries& fq, std::string_view page) {
-    auto doc = fhp::Document::parse(page);
+std::vector<Quote> quotes_fast_css(const FastQueries& fq, std::string_view page, bool view = false) {
+    auto doc = load(page, view);
     std::vector<Quote> out;
     for (fhp::Node q : fq.quote_css.all(doc)) {
         Quote r;
@@ -493,6 +503,105 @@ std::vector<Quote> quotes_libxml2(const Libxml2Queries& q, std::string_view page
 }
 #endif
 
+// ----- sanblch/fasthtmlparser-cpp (another C++ port; its API, as in its own benchmark) -----
+
+#ifdef BENCH_SANBLCH
+/// The page copied into the document (fh::Document::parse), or borrowed (parse_borrowed, as its own benchmark).
+fh::Document fh_load(std::string_view page, bool borrowed) {
+    return borrowed ? fh::Document::parse_borrowed(page) : fh::Document::parse(page);
+}
+
+struct FhQueries {
+    fh::CssQuery pods = fh::CssQuery::compile("article.product_pod");
+    fh::CssQuery title = fh::CssQuery::compile("h3 a");
+    fh::CssQuery price = fh::CssQuery::compile("p.price_color");
+    fh::CssQuery rating = fh::CssQuery::compile("p.star-rating");
+    fh::XPathQuery pods_x = fh::XPathQuery::compile(pods_xpath);
+    fh::XPathQuery title_x = fh::XPathQuery::compile(title_xpath);
+    fh::XPathQuery price_x = fh::XPathQuery::compile(price_xpath);
+    fh::XPathQuery rating_x = fh::XPathQuery::compile(rating_xpath);
+    fh::CssQuery quote = fh::CssQuery::compile("div.quote");
+    fh::CssQuery text = fh::CssQuery::compile("span.text");
+    fh::CssQuery author = fh::CssQuery::compile("small.author");
+    fh::CssQuery tag = fh::CssQuery::compile("a.tag");
+};
+
+std::string fh_text(const std::optional<fh::Tag>& t) { return t ? t->text() : std::string(); }
+
+std::vector<Book> books_fh(std::string_view page, bool borrowed) {
+    fh::Document doc = fh_load(page, borrowed);
+    std::vector<Book> out;
+    for (const fh::Tag& pod : doc.find_all(fh::TagQuery(fh::HtmlTag::Article).with_class("product_pod"))) {
+        Book b;
+        if (auto h = pod.find(fh::TagQuery(fh::HtmlTag::H3)))
+            if (auto a = h->find(fh::TagQuery(fh::HtmlTag::A))) b.title = a->attribute(fh::Attr::Title);
+        b.price = fh_text(pod.find(fh::TagQuery(fh::HtmlTag::P).with_class("price_color")));
+        if (auto p = pod.find(fh::TagQuery(fh::HtmlTag::P).with_class("star-rating")))
+            b.rating = last_word(p->attribute(fh::Attr::Class));
+        out.push_back(std::move(b));
+    }
+    return out;
+}
+
+std::vector<Book> books_fh_css(const FhQueries& q, std::string_view page, bool borrowed) {
+    fh::Document doc = fh_load(page, borrowed);
+    std::vector<Book> out;
+    for (const fh::Tag& pod : q.pods.select_all(doc)) {
+        Book b;
+        if (auto a = pod.css_first(q.title)) b.title = a->attribute(fh::Attr::Title);
+        b.price = fh_text(pod.css_first(q.price));
+        if (auto p = pod.css_first(q.rating)) b.rating = last_word(p->attribute(fh::Attr::Class));
+        out.push_back(std::move(b));
+    }
+    return out;
+}
+
+std::vector<Book> books_fh_xpath(const FhQueries& q, std::string_view page, bool borrowed) {
+    fh::Document doc = fh_load(page, borrowed);
+    std::vector<Book> out;
+    for (const fh::Tag& pod : q.pods_x.select_tags(doc)) {
+        Book b;
+        b.title = pod.xpath_value(q.title_x).value_or("");
+        b.price = pod.xpath_value(q.price_x).value_or("");
+        b.rating = last_word(pod.xpath_value(q.rating_x).value_or(""));
+        out.push_back(std::move(b));
+    }
+    return out;
+}
+
+std::vector<Quote> quotes_fh(std::string_view page, bool borrowed) {
+    fh::Document doc = fh_load(page, borrowed);
+    std::vector<Quote> out;
+    for (const fh::Tag& q : doc.find_all(fh::TagQuery(fh::HtmlTag::Div).with_class("quote"))) {
+        Quote r;
+        r.text = fh_text(q.find(fh::TagQuery(fh::HtmlTag::Span).with_class("text")));
+        r.author = fh_text(q.find(fh::TagQuery(fh::HtmlTag::Small).with_class("author")));
+        for (const fh::Tag& a : q.find_all(fh::TagQuery(fh::HtmlTag::A).with_class("tag"))) {
+            if (!r.tags.empty()) r.tags.push_back(',');
+            r.tags += a.text();
+        }
+        out.push_back(std::move(r));
+    }
+    return out;
+}
+
+std::vector<Quote> quotes_fh_css(const FhQueries& fq, std::string_view page, bool borrowed) {
+    fh::Document doc = fh_load(page, borrowed);
+    std::vector<Quote> out;
+    for (const fh::Tag& q : fq.quote.select_all(doc)) {
+        Quote r;
+        r.text = fh_text(q.css_first(fq.text));
+        r.author = fh_text(q.css_first(fq.author));
+        for (const fh::Tag& a : fq.tag.select_all(q)) {
+            if (!r.tags.empty()) r.tags.push_back(',');
+            r.tags += a.text();
+        }
+        out.push_back(std::move(r));
+    }
+    return out;
+}
+#endif
+
 // ----- timing -----
 
 using Clock = std::chrono::steady_clock;
@@ -543,6 +652,30 @@ bool same(const char* what, const std::vector<T>& got, const std::vector<T>& wan
     return false;
 }
 
+/// The number of records and an FNV-1a checksum of their fields, for the report.
+template <class T>
+std::string digest(const std::vector<T>& records) {
+    std::uint64_t h = 1469598103934665603ull;
+    auto add = [&](const std::string& s) {
+        for (unsigned char c : s) h = (h ^ c) * 1099511628211ull;
+        h = (h ^ 0xFF) * 1099511628211ull;
+    };
+    for (const T& r : records) {
+        if constexpr (std::is_same_v<T, Book>) {
+            add(r.title);
+            add(r.price);
+            add(r.rating);
+        } else {
+            add(r.text);
+            add(r.author);
+            add(r.tags);
+        }
+    }
+    char buf[64];
+    std::snprintf(buf, sizeof buf, "%zu records, fnv %016llx", records.size(), static_cast<unsigned long long>(h));
+    return buf;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -578,6 +711,24 @@ int main(int argc, char** argv) {
     ok &= same("libxml2", books_libxml2(xq, books), expected);
     ok &= same("libxml2 quotes", quotes_libxml2(xq, quotes), expected_quotes);
 #endif
+#ifdef BENCH_SANBLCH
+    FhQueries hq;
+    for (bool borrowed : {false, true}) {
+        ok &= same("sanblch find", books_fh(books, borrowed), expected);
+        ok &= same("sanblch CSS", books_fh_css(hq, books, borrowed), expected);
+        ok &= same("sanblch XPath", books_fh_xpath(hq, books, borrowed), expected);
+        ok &= same("sanblch find quotes", quotes_fh(quotes, borrowed), expected_quotes);
+        ok &= same("sanblch CSS quotes", quotes_fh_css(hq, quotes, borrowed), expected_quotes);
+    }
+    for (bool view : {false, true}) {
+        ok &= same("fasthtmlparser find, view", books_fast(books, view), expected);
+        ok &= same("fasthtmlparser XPath, view", books_fast_xpath(fq, books, view), expected);
+        ok &= same("fasthtmlparser quotes, view", quotes_fast(quotes, view), expected_quotes);
+    }
+    std::cout << "books:  fasthtmlparser " << digest(books_fast(books)) << "; sanblch "
+              << digest(books_fh(books, true)) << "\nquotes: fasthtmlparser " << digest(quotes_fast(quotes))
+              << "; sanblch " << digest(quotes_fh(quotes, true)) << "\n";
+#endif
     std::cout << "Book { title: \"" << expected[0].title << "\", price: \"" << expected[0].price << "\", rating: \""
               << expected[0].rating << "\" }\n"
               << expected_quotes[0].author << "\n\n";
@@ -597,6 +748,17 @@ int main(int argc, char** argv) {
     for (const auto& [name, page] : pages) {
         std::size_t n = page->size();
         row(name, "fasthtmlparser", n, [&] { keep(fhp::Document::parse(*page)); });
+#ifdef BENCH_SANBLCH
+        row(name, "fasthtmlparser, no copy", n, [&] { keep(fhp::Document::parse_view(*page)); });
+        row(name, "sanblch/fasthtmlparser-cpp", n, [&] {
+            fh::Document d = fh::Document::parse(*page);
+            keep(d);
+        });
+        row(name, "sanblch/fasthtmlparser-cpp, borrowed", n, [&] {
+            fh::Document d = fh::Document::parse_borrowed(*page);
+            keep(d);
+        });
+#endif
         row(name, "lexbor", n, [&] { lxb_html_document_destroy(lexbor_parse(*page)); });
         row(name, "Gumbo", n, [&] { gumbo_destroy_output(&kGumboDefaultOptions, gumbo_parse_page(*page)); });
 #ifdef BENCH_LIBXML2
@@ -612,6 +774,19 @@ int main(int argc, char** argv) {
     row("scrape 20 books", "fasthtmlparser find", 0, [&] { keep(books_fast(books)); });
     row("scrape 20 books", "fasthtmlparser CSS", 0, [&] { keep(books_fast_css(fq, books)); });
     row("scrape 20 books", "fasthtmlparser XPath", 0, [&] { keep(books_fast_xpath(fq, books)); });
+#ifdef BENCH_SANBLCH
+    row("scrape 20 books", "fasthtmlparser find, no copy", 0, [&] { keep(books_fast(books, true)); });
+    row("scrape 20 books", "fasthtmlparser CSS, no copy", 0, [&] { keep(books_fast_css(fq, books, true)); });
+    row("scrape 20 books", "fasthtmlparser XPath, no copy", 0, [&] { keep(books_fast_xpath(fq, books, true)); });
+    for (bool borrowed : {false, true}) {
+        std::string suffix = borrowed ? ", borrowed" : "";
+        row("scrape 20 books", "sanblch/fasthtmlparser-cpp find" + suffix, 0, [&] { keep(books_fh(books, borrowed)); });
+        row("scrape 20 books", "sanblch/fasthtmlparser-cpp CSS" + suffix, 0,
+            [&] { keep(books_fh_css(hq, books, borrowed)); });
+        row("scrape 20 books", "sanblch/fasthtmlparser-cpp XPath" + suffix, 0,
+            [&] { keep(books_fh_xpath(hq, books, borrowed)); });
+    }
+#endif
     row("scrape 20 books", "lexbor CSS", 0, [&] { keep(books_lexbor(lx, books)); });
     row("scrape 20 books", "Gumbo tree walk", 0, [&] { keep(books_gumbo(books)); });
 #ifdef BENCH_LIBXML2
@@ -619,6 +794,17 @@ int main(int argc, char** argv) {
 #endif
     row("scrape 10 quotes", "fasthtmlparser find", 0, [&] { keep(quotes_fast(quotes)); });
     row("scrape 10 quotes", "fasthtmlparser CSS", 0, [&] { keep(quotes_fast_css(fq, quotes)); });
+#ifdef BENCH_SANBLCH
+    row("scrape 10 quotes", "fasthtmlparser find, no copy", 0, [&] { keep(quotes_fast(quotes, true)); });
+    row("scrape 10 quotes", "fasthtmlparser CSS, no copy", 0, [&] { keep(quotes_fast_css(fq, quotes, true)); });
+    for (bool borrowed : {false, true}) {
+        std::string suffix = borrowed ? ", borrowed" : "";
+        row("scrape 10 quotes", "sanblch/fasthtmlparser-cpp find" + suffix, 0,
+            [&] { keep(quotes_fh(quotes, borrowed)); });
+        row("scrape 10 quotes", "sanblch/fasthtmlparser-cpp CSS" + suffix, 0,
+            [&] { keep(quotes_fh_css(hq, quotes, borrowed)); });
+    }
+#endif
     row("scrape 10 quotes", "lexbor CSS", 0, [&] { keep(quotes_lexbor(lx, quotes)); });
     row("scrape 10 quotes", "Gumbo tree walk", 0, [&] { keep(quotes_gumbo(quotes)); });
 #ifdef BENCH_LIBXML2
