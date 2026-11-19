@@ -1,0 +1,12 @@
+# C++ sources with LF everywhere.
+*.cpp text eol=lf
+*.hpp text eol=lf
+*.inc text eol=lf
+*.txt text eol=lf
+*.cmake text eol=lf
+*.in text eol=lf
+*.py text eol=lf
+
+# Test pages and the expected .NET output are compared byte for byte (positions are byte offsets):
+# git must never convert their line endings.
+testdata/** -text linguist-vendored
