@@ -1,5 +1,6 @@
 // XPath 1.0 over the flat tag list: a tokenizer, a recursive-descent compiler and an evaluator.
 
+#include <cstring>
 #include <algorithm>
 #include <charconv>
 #include <cmath>
@@ -585,6 +586,7 @@ enum class ExprKind : unsigned char {
     union_,
     attribute_equals, // @name = 'literal', compared in place without building a node-set
     attribute_exists, // [@name]
+    attribute_test,   // contains/starts-with/ends-with(concat('p', @name, 's'), 'literal'), tested in place
     path,             // a location path, absolute or relative, optionally starting from a filter expression
     filter,           // a primary expression with predicates: (//li)[last()]
     function,
@@ -593,7 +595,8 @@ enum class ExprKind : unsigned char {
 struct Expr {
     ExprKind kind;
     std::string text;   // literal; attribute name
-    std::string value;  // attribute_equals value
+    std::string value;  // attribute_equals value; attribute_test needle
+    std::string prefix, suffix; // attribute_test: the literals around the attribute
     double number = 0;
     bool flag = false;  // logic: and; attribute_equals: negate; path: absolute
     CompareOp compare_op = CompareOp::eq;
@@ -615,7 +618,8 @@ struct Expr {
         case ExprKind::logic:
         case ExprKind::compare:
         case ExprKind::attribute_equals:
-        case ExprKind::attribute_exists: return XType::boolean;
+        case ExprKind::attribute_exists:
+        case ExprKind::attribute_test: return XType::boolean;
         case ExprKind::union_:
         case ExprKind::path:
         case ExprKind::filter: return XType::node_set;
@@ -1161,7 +1165,8 @@ Value eval(const Expr& e, const Ctx& c) {
     case ExprKind::logic:
     case ExprKind::compare:
     case ExprKind::attribute_equals:
-    case ExprKind::attribute_exists: return eval_bool(e, c);
+    case ExprKind::attribute_exists:
+    case ExprKind::attribute_test: return eval_bool(e, c);
     case ExprKind::arith: {
         double x = eval_number(*e.left, c);
         double y = eval_number(*e.right, c);
@@ -1201,6 +1206,35 @@ Value eval(const Expr& e, const Ctx& c) {
     return false;
 }
 
+/// contains(concat(prefix, @name, suffix), 'needle') (and starts-with, ends-with; prefix and suffix may be empty):
+/// tested on the attribute value in place, without a node-set and strings for every element.
+bool test_string(Func f, std::string_view s, std::string_view needle) {
+    if (f == Func::starts_with) return s.substr(0, needle.size()) == needle;
+    if (f == Func::ends_with) return s.size() >= needle.size() && s.substr(s.size() - needle.size()) == needle;
+    return s.find(needle) != std::string_view::npos;
+}
+
+bool attribute_test(const Expr& e, const Ctx& c) {
+    std::string_view raw; // a missing attribute is an empty node-set, whose string-value is ""
+    if (!attribute_of(c.state->doc, c.node, e.text, raw)) raw = {};
+    CowString decoded = needs_decoding(raw) ? decode(raw, true) : CowString(raw);
+    std::string_view value = decoded.view();
+    if (e.prefix.empty() && e.suffix.empty()) return test_string(e.func, value, e.value);
+
+    std::size_t len = e.prefix.size() + value.size() + e.suffix.size();
+    char stack_buffer[256];
+    std::string heap;
+    char* joined = stack_buffer;
+    if (len > sizeof stack_buffer) {
+        heap.resize(len);
+        joined = heap.data();
+    }
+    std::memcpy(joined, e.prefix.data(), e.prefix.size());
+    std::memcpy(joined + e.prefix.size(), value.data(), value.size());
+    std::memcpy(joined + e.prefix.size() + value.size(), e.suffix.data(), e.suffix.size());
+    return test_string(e.func, std::string_view(joined, len), e.value);
+}
+
 bool eval_bool(const Expr& e, const Ctx& c) {
     const DocumentData& doc = c.state->doc;
     switch (e.kind) {
@@ -1219,6 +1253,7 @@ bool eval_bool(const Expr& e, const Ctx& c) {
         std::string_view raw;
         return attribute_of(doc, c.node, e.text, raw);
     }
+    case ExprKind::attribute_test: return attribute_test(e, c);
     default: return to_boolean(eval(e, c));
     }
 }
@@ -1814,6 +1849,33 @@ private:
             fail_at(t.text + "() needs a node-set argument", t.position);
         e->func = f;
         e->func_type = info->type;
+        return make_attribute_test(std::move(e));
+    }
+
+    /// contains(@a, 'x'), starts-with(...), ends-with(...), also with the attribute wrapped in literals
+    /// (contains(concat(' ', @class, ' '), ' x '), the usual class test), are evaluated on the attribute in place.
+    static ExprPtr make_attribute_test(ExprPtr f) {
+        if ((f->func != Func::contains && f->func != Func::starts_with && f->func != Func::ends_with) ||
+            f->args[1]->kind != ExprKind::literal)
+            return f;
+        const Expr& arg = *f->args[0];
+        std::string prefix, suffix;
+        const std::string* name = attribute_name(arg);
+        if (!name) {
+            if (arg.kind != ExprKind::function || arg.func != Func::concat || arg.args.size() != 3 ||
+                arg.args[0]->kind != ExprKind::literal || arg.args[2]->kind != ExprKind::literal)
+                return f;
+            name = attribute_name(*arg.args[1]);
+            if (!name) return f;
+            prefix = arg.args[0]->text;
+            suffix = arg.args[2]->text;
+        }
+        auto e = std::make_unique<Expr>(ExprKind::attribute_test);
+        e->text = *name;
+        e->prefix = std::move(prefix);
+        e->suffix = std::move(suffix);
+        e->value = f->args[1]->text;
+        e->func = f->func;
         return e;
     }
 
