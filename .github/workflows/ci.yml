@@ -32,6 +32,36 @@ jobs:
       - name: Test
         run: ctest --test-dir build --output-on-failure
 
+  # FASTHTMLPARSER_LTO and FASTHTMLPARSER_PGO: an instrumented build, the tests as the training run, a build with
+  # the profile.
+  pgo:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            cxx: g++
+          - os: ubuntu-latest
+            cxx: clang++
+          - os: windows-latest
+            cxx: cl
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+      - name: Instrumented build
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=${{ matrix.cxx }} -DFASTHTMLPARSER_LTO=ON -DFASTHTMLPARSER_PGO=GENERATE
+          cmake --build build
+      - name: Training run
+        run: ctest --test-dir build --output-on-failure
+      - name: Build with the profile
+        run: |
+          cmake -S . -B build -DFASTHTMLPARSER_PGO=USE
+          cmake --build build
+          ctest --test-dir build --output-on-failure
+
   # Every library of the benchmark must extract the same records.
   bench:
     runs-on: ubuntu-latest
