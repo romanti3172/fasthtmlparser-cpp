@@ -105,7 +105,7 @@ A `Document` is read-only and can be used from any number of threads at once.
 ## Same results as the .NET version
 
 `ctest` (or `build/tests/fasthtmlparser_tests`) runs the conformance suite of the Rust port against
-z3l.FastHtmlParser 1.4.1 (.NET) on 117 pages: the test fixtures, broken-markup snippets, edge cases, pages with end
+z3l.FastHtmlParser 1.4.1 (.NET) on 121 pages: the test fixtures, broken-markup snippets, edge cases, pages with end
 tags left out or dropped at random, names upper-cased, pages cut off, saved with CR LF and with a lone CR.
 
 - `tags as .NET`: every tag (16,643): names, parents, depths, positions (UTF-8 byte offsets), inner positions,

@@ -427,7 +427,10 @@ struct ParseState {
                                 static_cast<std::int16_t>(key)};
 
         // Void elements (<br>, <img>, <meta>, ...) and declarations never contain anything.
-        bool is_void = !xml && key >= 0 && t.void_tags[key];
+        // Neither does markup named "!..." or "?..." (<!doctype>, <?xml ...?>, <?php ...?>, <![if IE]>), in HTML and in
+        // XML alike: a bogus comment in a browser, a declaration or processing instruction in XML. The name starts with
+        // an ASCII letter, '!' or '?' (is_markup_start), and '!' and '?' sort before the letters: one compare.
+        bool is_void = static_cast<unsigned char>(src[tag_start]) <= '?' || (!xml && key >= 0 && t.void_tags[key]);
         std::string_view trimmed = trim_ascii_end(tag_source);
         bool self_closing = is_void || (!trimmed.empty() && trimmed.back() == '/');
 
