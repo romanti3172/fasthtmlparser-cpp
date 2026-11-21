@@ -186,6 +186,12 @@ TEST_CASE("compile errors are values, the string methods throw") {
     auto doc = Document::parse("<div><p>1</p><p>2</p></div>");
     CHECK_THROWS_AS(doc.css("div >> p"), std::invalid_argument);
     CHECK_THROWS_AS(doc.xpath("//div["), std::invalid_argument);
+    try {
+        doc.xpath("//div[");
+        FAIL("no error");
+    } catch (const std::invalid_argument& e) {
+        CHECK(std::string(e.what()).find("unexpected end of the expression") != std::string::npos);
+    }
     CHECK_THROWS_AS(doc.xpath("count(//p)"), std::logic_error); // a number, not tags
     CHECK(doc.xpath_value("count(//p)") == "2");
     auto count = XPathQuery::compile("count(//p)");

@@ -1690,7 +1690,8 @@ private:
             absolute = true;
             steps = parse_relative_steps(std::move(steps), true);
         } else {
-            if (!can_start_step(peek(0))) fail("unexpected " + describe(peek(0)));
+            if (!can_start_step(peek(0)))
+                fail(peek(0).kind == T::end ? "unexpected end of the expression" : "unexpected " + describe(peek(0)));
             steps = parse_relative_steps(std::move(steps), false);
         }
         auto path = std::make_unique<Expr>(ExprKind::path);
