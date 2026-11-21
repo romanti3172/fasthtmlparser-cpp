@@ -48,6 +48,7 @@ struct DocumentData {
     std::pmr::string url;
     std::optional<Url> base; // url parsed once, for resolving relative links
     mutable std::atomic<CssTree*> css_tree{nullptr}; // sibling links and positions, built by the first selector
+    mutable std::atomic<int> has_pre{0}; // 0: not looked up, 1: no pre, listing or plaintext, 2: there is one
 
     Node at(std::size_t i) const noexcept { return Node(this, static_cast<std::uint32_t>(i)); }
     const NodeData& node(std::size_t i) const noexcept { return nodes[i]; }
@@ -97,8 +98,16 @@ std::size_t match_numeric(std::string_view s, char32_t& c) noexcept;
 std::size_t match_named(std::string_view s, bool in_attribute, std::string_view& value) noexcept;
 
 // text.cpp
-CowString clear_tags(std::string_view s);
+CowString clear_tags(std::string_view s, bool in_pre = false);
 bool is_text(const Node& n, std::string_view expected);
+/// Whether the tag separates words in the one-line text (as jsoup's text()): <br>, blocks, p/h1-h6, table cells.
+bool separates_words_tag(int key) noexcept;
+/// Whether trimmed text has whitespace to collapse: a line break, tab or other space than ' ', or two spaces in a row.
+bool needs_collapse(std::string_view s) noexcept;
+/// Whether the page has a pre, listing or plaintext (looked up once).
+bool document_has_pre(const DocumentData& d) noexcept;
+/// Whether the tag is pre, listing or plaintext, or inside one.
+bool in_pre(const Node& n) noexcept;
 std::string clear_tags_line_breaks(std::string_view value);
 
 // attributes.cpp

@@ -147,13 +147,22 @@ std::string_view Node::outer_html() const noexcept {
         src.substr(static_cast<std::size_t>(d.start), static_cast<std::size_t>(d.end + 1 - d.start)));
 }
 
+// The visible text in one line, as jsoup's text(): <br>, block elements and table cells separate words, inline tags
+// do not, whitespace and line breaks collapse to one space; inside <pre> whitespace is kept; script, style, textarea,
+// title, ... are their content as written.
 CowString Node::text() const {
     std::string_view b = body();
     int key = data(*this).key;
-    // No child tags and no '<' at all: the body is the text, except in script, style, textarea, title, ...
-    if (!has_children() && (detail::find_byte(b, '<') == detail::npos || !detail::raw_text_end(key).empty()))
-        return detail::decode(b, false);
-    return detail::clear_tags(b);
+    bool leaf = !has_children();
+    // script, style, textarea, title, ... without child tags: their content is text as written
+    if (leaf && !detail::raw_text_end(key).empty()) return detail::decode(b, false);
+    // no child tags, no '<' and no whitespace to collapse: the body is the text
+    bool plain = leaf && detail::find_byte(b, '<') == detail::npos;
+    if (plain && !detail::needs_collapse(b)) return detail::decode(b, false);
+    // <pre> and what is in it keep their whitespace (looked up only when there is whitespace to keep)
+    bool pre = detail::in_pre(*this);
+    if (plain && pre) return detail::decode(b, false);
+    return detail::clear_tags(b, pre);
 }
 
 bool Node::has_children() const noexcept {

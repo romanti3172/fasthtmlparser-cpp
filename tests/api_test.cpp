@@ -112,6 +112,28 @@ TEST_CASE("shortcuts on the books page") {
 }
 
 // CR LF and a lone CR are LF in values, as a browser reads the page; a CR written as a reference stays.
+// text() is the visible text in one line, as jsoup's text() (the cases of TextOneLineTests in the .NET version).
+TEST_CASE("text is one line") {
+    const std::pair<const char*, const char*> cases[] = {
+        {"line1<br>line2", "line1 line2"}, {"line1<br><br><br>line2", "line1 line2"}, {"line1 <br> line2", "line1 line2"},
+        {"line1<BR/>line2", "line1 line2"}, {"<p>a</p><p>b</p>", "a b"}, {"<ul><li>a</li><li>b</li></ul>", "a b"},
+        {"<table><tr><td>Price</td><td>100</td></tr></table>", "Price 100"}, {"<h1>Title</h1>text", "Title text"},
+        {"a<span>b</span>c", "abc"}, {"a<my-widget>b</my-widget>", "ab"}, {"a\nb", "a b"}, {"a\r\n\t  b", "a b"},
+        {"a<!-- c -->b", "ab"}, {"<p>a</p><script>x()</script><p>b</p>", "a b"}, {"a &amp; b", "a & b"},
+        {"x<pre>a\n  b</pre>y", "x a\n  b y"},
+    };
+    for (const auto& [html, text] : cases) {
+        CAPTURE(html);
+        auto doc = Document::parse(std::string("<div>") + html + "</div>");
+        CHECK(doc.find(by(Tag::DIV))->text() == text);
+        CHECK(doc.find_all(by(Tag::DIV).text(text)).size() == 1);
+    }
+    auto doc = Document::parse("<span>a\n   b</span><pre>c\n  d</pre><textarea>e\n  f</textarea>");
+    CHECK(doc.find(by(Tag::SPAN))->text() == "a b");
+    CHECK(doc.find(by(Tag::PRE))->text() == "c\n  d");
+    CHECK(doc.find(by(Tag::TEXTAREA))->text() == "e\n  f");
+}
+
 TEST_CASE("line breaks are read as in a browser") {
     auto doc = Document::parse(
         "<meta name=\"d\" content=\"one\r\ntwo\rthree&#13;four\">"

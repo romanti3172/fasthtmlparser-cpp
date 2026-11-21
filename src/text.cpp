@@ -53,9 +53,44 @@ std::size_t skip_markup(std::string_view s, std::size_t i) {
     return tag_end;
 }
 
-/// Removes tags, comments and invisible content, collapses whitespace runs into one ' ' and trims.
-void strip_tags(std::string_view s, std::string& dst) {
+/// Whether the markup at s[i] ('<') is a tag that separates words in the one-line text, as in jsoup's text(): <br>,
+/// a block element or a table cell, opening or closing. Comments, declarations, inline and unknown tags do not.
+bool separates_words(std::string_view s, std::size_t i) {
+    std::size_t start = i + 1;
+    if (start < s.size() && s[start] == '/') ++start;
+    std::size_t end = start;
+    while (end < s.size() && (is_ascii_alpha(static_cast<unsigned char>(s[end])) || (s[end] >= '0' && s[end] <= '9'))) ++end;
+    if (end == start) return false;
+    int key = lookup_tag(s.substr(start, end - start));
+    return key >= 0 && separates_words_tag(key);
+}
+
+bool is_pre_key(int key) noexcept {
+    return key == Tag::PRE.index() || key == Tag::LISTING.index() || key == Tag::PLAINTEXT.index();
+}
+
+/// +1 for an opening pre, listing or plaintext at s[i], -1 for a closing one, 0 otherwise: their text keeps its
+/// whitespace, as in jsoup.
+int pre_tag(std::string_view s, std::size_t i) {
+    std::size_t start = i + 1;
+    int sign = 1;
+    if (start < s.size() && s[start] == '/') {
+        ++start;
+        sign = -1;
+    }
+    if (start >= s.size() || ((s[start] | 0x20) != 'p' && (s[start] | 0x20) != 'l')) return 0; // the usual tag
+    std::size_t end = start;
+    while (end < s.size() && is_ascii_alpha(static_cast<unsigned char>(s[end]))) ++end;
+    return is_pre_key(lookup_tag(s.substr(start, end - start))) ? sign : 0;
+}
+
+/// Removes tags, comments and invisible content, collapses whitespace runs into one ' ' and trims: the visible text
+/// in one line, as jsoup's text(). <br>, block elements and table cells separate words ("a<br>b", a row of cells:
+/// "a b"), inline tags do not ("a<b>b</b>": "ab"). Inside <pre> (in_pre: the text itself is in one) whitespace is
+/// kept as written.
+void strip_tags(std::string_view s, std::string& dst, bool in_pre) {
     bool prev_space = true; // left trim
+    int pre_depth = in_pre ? 1 : 0;
     std::size_t i = 0;
     std::size_t run = 0; // the start of the text not yet copied
     while (i < s.size()) {
@@ -67,8 +102,27 @@ void strip_tags(std::string_view s, std::string& dst) {
                 run = s.size();
                 break;
             }
+            if (!in_pre) pre_depth = std::max(0, pre_depth + pre_tag(s, i));
+            // only after a word: next to whitespace the tag changes nothing (and costs no lookup)
+            if (!prev_space && separates_words(s, i)) {
+                dst.push_back(' ');
+                prev_space = true;
+            }
             i = last + 1;
             run = i;
+            continue;
+        }
+        if (pre_depth > 0) {
+            bool space;
+            Utf8Char ch = space_at(s, i, space);
+            if (space) {
+                // as written (left in the run), but not at the start
+                if (dst.empty() && run == i) run = i + ch.size;
+                prev_space = true;
+            } else {
+                prev_space = false;
+            }
+            i += ch.size;
             continue;
         }
         if (c < 0x80) {
@@ -100,17 +154,66 @@ void strip_tags(std::string_view s, std::string& dst) {
         i += ch.size;
     }
     if (run < s.size()) dst.append(s.substr(run));
-    // Right trim: whitespace is collapsed, so there is at most one trailing space.
-    if (!dst.empty() && dst.back() == ' ') dst.pop_back();
+    // Right trim (inside <pre> there may be more than one trailing whitespace char).
+    while (!dst.empty()) {
+        std::size_t k = dst.size() - 1;
+        while (k > 0 && (static_cast<unsigned char>(dst[k]) & 0xC0) == 0x80) --k; // the start of the last char
+        bool space;
+        space_at(dst, k, space);
+        if (!space) break;
+        dst.resize(k);
+    }
 }
 
 } // namespace
 
-CowString clear_tags(std::string_view s) {
+bool needs_collapse(std::string_view s) noexcept {
+    std::size_t i = 0;
+    while (i < s.size()) {
+        bool space;
+        if (s[i] == ' ') {
+            if (i + 1 < s.size()) {
+                space_at(s, i + 1, space);
+                if (space) return true;
+            }
+            ++i;
+            continue;
+        }
+        Utf8Char ch = space_at(s, i, space);
+        if (space) return true;
+        i += ch.size;
+    }
+    return false;
+}
+
+bool document_has_pre(const DocumentData& d) noexcept {
+    int v = d.has_pre.load(std::memory_order_relaxed);
+    if (v == 0) {
+        v = 1;
+        for (const NodeData& n : d.nodes) {
+            if (is_pre_key(n.key)) {
+                v = 2;
+                break;
+            }
+        }
+        d.has_pre.store(v, std::memory_order_relaxed); // a race only computes the same answer twice
+    }
+    return v == 2;
+}
+
+bool in_pre(const Node& n) noexcept {
+    if (!document_has_pre(doc(n))) return false;
+    for (std::optional<Node> t = n; t; t = t->parent()) {
+        if (is_pre_key(data(*t).key)) return true;
+    }
+    return false;
+}
+
+CowString clear_tags(std::string_view s, bool in_pre) {
     if (s.empty()) return CowString();
     std::string buf;
     buf.reserve(s.size());
-    strip_tags(s, buf);
+    strip_tags(s, buf, in_pre);
     if (find_byte(buf, '&') != npos) return CowString(std::move(decode(buf, false)).str());
     return CowString(std::move(buf));
 }
@@ -118,6 +221,8 @@ CowString clear_tags(std::string_view s) {
 bool is_text(const Node& n, std::string_view expected) {
     std::string_view value = n.body();
     if (value.empty() || expected.empty()) return false;
+    // <pre> keeps its whitespace in text(), raw text is as written: compare with text() itself (rare, the slow way)
+    if ((!n.has_children() && !raw_text_end(data(n).key).empty()) || document_has_pre(doc(n))) return n.text() == expected;
     std::size_t matched = 0;
     bool prev_space = true;     // left trim
     bool pending_space = false; // a collapsed space counts only if more text follows (right trim)
@@ -127,6 +232,11 @@ bool is_text(const Node& n, std::string_view expected) {
         if (c == '<' && is_markup_start(value, i)) {
             std::size_t last = skip_markup(value, i);
             if (last == npos) break;
+            // <br>, blocks and cells separate words, as in text()
+            if (!prev_space && separates_words(value, i)) {
+                pending_space = true;
+                prev_space = true;
+            }
             i = last + 1;
             continue;
         }
@@ -191,6 +301,15 @@ const std::array<LineBreak, tag_count>& line_break_kinds() {
     }();
     return kinds;
 }
+
+} // namespace
+
+bool separates_words_tag(int key) noexcept {
+    LineBreak k = line_break_kinds()[static_cast<std::size_t>(key)];
+    return k == LineBreak::line || k == LineBreak::paragraph || k == LineBreak::space;
+}
+
+namespace {
 
 /// Writes text, collapsing whitespace and turning requested breaks into trimmed lines.
 struct LineWriter {
