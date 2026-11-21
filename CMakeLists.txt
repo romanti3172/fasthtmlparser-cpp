@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(fasthtmlparser
-    VERSION 0.1.2
+    VERSION 0.1.3
     DESCRIPTION "Fast HTML / XML parser for scraping with XPath 1.0 and CSS selectors (a C++20 port of z3l.FastHtmlParser)"
     HOMEPAGE_URL "https://github.com/romanti3172/fasthtmlparser-cpp"
     LANGUAGES CXX)

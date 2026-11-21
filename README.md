@@ -18,7 +18,7 @@ C++20, no dependencies; tested with MSVC, gcc and clang (CI on Windows and Linux
 
 ```cmake
 include(FetchContent)
-FetchContent_Declare(fasthtmlparser GIT_REPOSITORY https://github.com/romanti3172/fasthtmlparser-cpp.git GIT_TAG v0.1.2)
+FetchContent_Declare(fasthtmlparser GIT_REPOSITORY https://github.com/romanti3172/fasthtmlparser-cpp.git GIT_TAG v0.1.3)
 FetchContent_MakeAvailable(fasthtmlparser)
 target_link_libraries(app PRIVATE fasthtmlparser::fasthtmlparser)
 ```
