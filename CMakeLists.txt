@@ -45,6 +45,16 @@ else()
     target_compile_options(fasthtmlparser PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
+# Optional link-time and profile-guided optimization of the library, off by default (see "Faster builds" in the
+# README): -DFASTHTMLPARSER_LTO=ON, and -DFASTHTMLPARSER_PGO=GENERATE, a run of your program on your pages, then
+# -DFASTHTMLPARSER_PGO=USE.
+option(FASTHTMLPARSER_LTO "Link-time optimization of the library" OFF)
+set(FASTHTMLPARSER_PGO OFF CACHE STRING "Profile-guided optimization of the library: OFF, GENERATE or USE")
+set_property(CACHE FASTHTMLPARSER_PGO PROPERTY STRINGS OFF GENERATE USE)
+set(FASTHTMLPARSER_PGO_DIR "${CMAKE_BINARY_DIR}/pgo" CACHE PATH
+    "Where GCC and Clang write and read the profile (MSVC keeps it next to each program)")
+include(cmake/optimize.cmake)
+
 if(FASTHTMLPARSER_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
